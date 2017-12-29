@@ -115,9 +115,6 @@ void runCommand(Array *argsArray) {
     char **args = array(argsArray);
     int length = len(argsArray);
     
-    // Keep track of the original stdout for when we pipe
-    int original_stdout = dup(fileno(stdout));
-    
     // Pipes
     int *curr = NULL;
     int *prev = NULL;
@@ -131,7 +128,7 @@ void runCommand(Array *argsArray) {
                 free(prev);
             }
             prev = curr;
-            if (i != length) {
+            if (i != length) { // This triggers and breaks prev...
                 curr = malloc(sizeof(int *) * 2);
                 pipe(curr);
             } else {
@@ -139,7 +136,6 @@ void runCommand(Array *argsArray) {
             }
 
             int status = (runCommandHelper(i - start, args + start, prev, curr));
-            dup2(original_stdout, fileno(stdout));
             if (status) { // Abort if a command fails!
                 break;
             }
@@ -147,9 +143,13 @@ void runCommand(Array *argsArray) {
         }
         i++;
     }
-    close(original_stdout);
+
+    // Clean up
     if (prev) {
         free(prev);
+    }
+    if (curr) {
+        free(curr);
     }
     free(args);
     printf("\n");
@@ -194,7 +194,7 @@ int execCommand(int argc, char **argv, int *prev, int *curr) {
             }
 
             if (curr) { // If piping to another process
-                dup2(curr[1], fileno(stdin));
+                dup2(curr[1], fileno(stdout));
                 close(curr[1]);
             }
 
