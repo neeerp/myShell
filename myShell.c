@@ -10,6 +10,7 @@
 void parseArg(Array *args, const char *line, int *i);
 int runCommandHelper(int argc, char** argv, int *prev, int *curr);
 int execCommand(int argc, char **argv, int *prev, int *curr);
+void closeHelper(int *prev, int *curr);
 
 /** Reads a line of text from the command line and returns an
  * Array of characters */
@@ -17,6 +18,10 @@ Array *readLine() {
     Array *line;
     init(&line, 1, 128);
     int quoted = 0;
+
+    char cwd[512];
+    getcwd(cwd, 512);
+    printf("%s@myShell:%s$ ", getenv("USER"), cwd);
     while(1) {
         char c = getchar();
         if (c == EOF || c == '\n') {
@@ -119,14 +124,14 @@ void runCommand(Array *argsArray) {
 
     int i = 0;
     int start = 0;
-    while (i <= length) {
-        if (i == length || strcmp(args[i], "|")) { // End of one program's args
+    while (i <= length) { 
+        if (i == length || !strcmp(args[i], "|")) { // End of one program's args
             // Shift pipe pointers
             if (prev) {
                 free(prev);
             }
             prev = curr;
-            if (!strcmp(args[i], "|")) {
+            if (i != length) {
                 curr = malloc(sizeof(int *) * 2);
                 pipe(curr);
             } else {
@@ -134,15 +139,20 @@ void runCommand(Array *argsArray) {
             }
 
             int status = (runCommandHelper(i - start, args + start, prev, curr));
-            dup2(fileno(stdout), original_stdout);
+            dup2(original_stdout, fileno(stdout));
             if (status) { // Abort if a command fails!
                 break;
             }
             start = i + 1;
         }
+        i++;
     }
     close(original_stdout);
+    if (prev) {
+        free(prev);
+    }
     free(args);
+    printf("\n");
 }
 
 /** Find out whether the command is a builtin and run it, otherwise
@@ -152,23 +162,30 @@ void runCommand(Array *argsArray) {
  * of builtins. */
 int runCommandHelper(int argc, char** argv, int *prev, int *curr) {
     // Run a builtin function
+    int initial_stdout = dup(fileno(stdout));
     for (int i = 0; i < num_builtins(); i++) {
         if (!strcmp(argv[0], builtins[i])) {
-            if (curr) { // Write to pipe
+            if (curr) { // redirect stdout to pipe
                 dup2(curr[1], fileno(stdout));
                 close(curr[1]);
             }
-            return builtin_functions[i](argc, argv);
+            // Run the builtin
+            int status = builtin_functions[i](argc, argv);
+            // Revert stdout from pipe to what it was initially
+            if (curr) {
+                fflush(stdout);
+                dup2(initial_stdout, fileno(stdout));
+            }
+            return status;
         }
     }
-
     return execCommand(argc, argv, prev, curr);
 }
 
 /** Fork a process to execute a command and wait on it to terminate,
  * returning its exit status (or 1 if the command could not be executed */
-int execCommand(int argc, char **argv, int *prev, int *curr) {
-    if (access(argv[0], X_OK)) {
+int execCommand(int argc, char **argv, int *prev, int *curr) {    
+    if (!access(argv[0], X_OK)) {
         int n = fork();
         if (n == 0) { // Child calling execvp
             if (prev) { // If receiving input from pipe
@@ -180,18 +197,18 @@ int execCommand(int argc, char **argv, int *prev, int *curr) {
                 dup2(curr[1], fileno(stdin));
                 close(curr[1]);
             }
-            execvp(argv[0], argv);
+
+            // Need to add a sentinel to the args
+            char **args = malloc(sizeof(char *) * (argc + 1));
+            memcpy(args, argv, sizeof(char *) * argc);
+            args[argc] = NULL;
+
+            execvp(args[0], args);
             perror("execvp");
             exit(1);
         } else if (n > 0) { // Waiting parent
             // Close pipes
-            if (prev) {
-                close(prev[0]);
-            }
-
-            if (curr) {
-                close(curr[1]);
-            }
+            closeHelper(prev, curr);
 
             // Wait on child
             int status;
@@ -203,12 +220,25 @@ int execCommand(int argc, char **argv, int *prev, int *curr) {
             }
         } else { // Fork failed
             perror("fork");
+            closeHelper(prev, curr);
             return 1;
         }
+
     } else { // command does not exist
         printf("myShell: %s: command not found.", argv[0]);
         return 1;
     }
 }
 
-// https://unix.stackexchange.com/questions/266794/does-the-shell-fork-when-i-use-built-in-commands
+/** Helper that closes the read end of prev and the write end of curr,
+ * should they exist. */
+void closeHelper(int *prev, int *curr) {
+    if (prev) {
+        close(prev[0]);
+    }
+
+    if (curr) {
+        close(curr[1]);
+    }
+}
+

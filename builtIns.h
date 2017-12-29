@@ -2,7 +2,6 @@
 #define BUILTINS_H_
 
 int num_builtins();
-int echo(int argc, char **args);
 
 extern char *builtins[];
 
